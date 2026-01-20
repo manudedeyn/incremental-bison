@@ -342,6 +342,12 @@ int ]b4_prefix[push_parse (]b4_prefix[pstate *ps]b4_pure_if([[,
 ]b4_pull_if([[int ]b4_prefix[pull_parse (]b4_prefix[pstate *ps]b4_user_formals[);]])[
 ]b4_prefix[pstate *]b4_prefix[pstate_new (void);
 void ]b4_prefix[pstate_delete (]b4_prefix[pstate *ps);
+
+/* Valid prefix detection callback.
+   Called when the input parsed so far could be a complete valid sentence.
+   Returns 0 to continue parsing, non-zero to abort (YYABORT).  */
+typedef int (*]b4_prefix[prefix_callback) (]b4_prefix[pstate *ps, int token, ]b4_api_PREFIX[STYPE const *value);
+void ]b4_prefix[pstate_set_prefix_callback (]b4_prefix[pstate *ps, ]b4_prefix[prefix_callback callback);
 ]])
 
 
@@ -895,6 +901,8 @@ struct yypstate
     /* Whether this instance has not started parsing yet.
      * If 2, it corresponds to a finished parsing.  */
     int yynew;
+    /* Valid prefix detection callback.  */
+    ]b4_prefix[prefix_callback yyprefix_callback;
   };]b4_pure_if([], [[
 
 /* Whether the only allowed instance of yypstate is allocated.  */
@@ -1540,6 +1548,95 @@ yypull_parse (yypstate *yyps]b4_user_formals[)
   return yystatus;
 }]])[
 
+/* Deep-copy a parser state for valid prefix detection.
+   This function is placed before macro definitions to avoid conflicts
+   when accessing struct fields on both source and destination pointers.
+   Returns YY_NULLPTR on memory allocation failure.  */
+static yypstate *
+yypstate_clone (const yypstate *yyps_src)
+{
+  yypstate *yyps_dst;
+  YYPTRDIFF_T yystack_depth;
+
+  if (!yyps_src)
+    return YY_NULLPTR;
+
+  yyps_dst = YY_CAST (yypstate *, YYMALLOC (sizeof *yyps_dst));
+  if (!yyps_dst)
+    return YY_NULLPTR;
+
+  yystack_depth = yyps_src->yyssp - yyps_src->yyss + 1;
+
+  yyps_dst->yynerrs = yyps_src->yynerrs;
+  yyps_dst->yystate = yyps_src->yystate;
+  yyps_dst->yyerrstatus = yyps_src->yyerrstatus;
+  yyps_dst->yystacksize = yyps_src->yystacksize;
+  yyps_dst->yynew = yyps_src->yynew;
+  yyps_dst->yyprefix_callback = YY_NULLPTR;
+
+  if (yyps_src->yyss == yyps_src->yyssa)
+    yyps_dst->yyss = yyps_dst->yyssa;
+  else
+    {
+      yyps_dst->yyss = YY_CAST (yy_state_t *,
+                                YYMALLOC (YY_CAST (YYSIZE_T, yyps_src->yystacksize) * sizeof *yyps_dst->yyss));
+      if (!yyps_dst->yyss)
+        { YYFREE (yyps_dst); return YY_NULLPTR; }
+    }
+  { YYPTRDIFF_T yyi; for (yyi = 0; yyi < yystack_depth; yyi++) yyps_dst->yyss[yyi] = yyps_src->yyss[yyi]; }
+  yyps_dst->yyssp = yyps_dst->yyss + (yyps_src->yyssp - yyps_src->yyss);
+
+  if (yyps_src->yyvs == yyps_src->yyvsa)
+    yyps_dst->yyvs = yyps_dst->yyvsa;
+  else
+    {
+      yyps_dst->yyvs = YY_CAST (YYSTYPE *,
+                                YYMALLOC (YY_CAST (YYSIZE_T, yyps_src->yystacksize) * sizeof *yyps_dst->yyvs));
+      if (!yyps_dst->yyvs)
+        {
+          if (yyps_dst->yyss != yyps_dst->yyssa) YYSTACK_FREE (yyps_dst->yyss);
+          YYFREE (yyps_dst); return YY_NULLPTR;
+        }
+    }
+  { YYPTRDIFF_T yyi; for (yyi = 0; yyi < yystack_depth; yyi++) yyps_dst->yyvs[yyi] = yyps_src->yyvs[yyi]; }
+  yyps_dst->yyvsp = yyps_dst->yyvs + (yyps_src->yyvsp - yyps_src->yyvs);
+]b4_locations_if([[
+  if (yyps_src->yyls == yyps_src->yylsa)
+    yyps_dst->yyls = yyps_dst->yylsa;
+  else
+    {
+      yyps_dst->yyls = YY_CAST (YYLTYPE *,
+                                YYMALLOC (YY_CAST (YYSIZE_T, yyps_src->yystacksize) * sizeof *yyps_dst->yyls));
+      if (!yyps_dst->yyls)
+        {
+          if (yyps_dst->yyss != yyps_dst->yyssa) YYSTACK_FREE (yyps_dst->yyss);
+          if (yyps_dst->yyvs != yyps_dst->yyvsa) YYSTACK_FREE (yyps_dst->yyvs);
+          YYFREE (yyps_dst); return YY_NULLPTR;
+        }
+    }
+  { YYPTRDIFF_T yyi; for (yyi = 0; yyi < yystack_depth; yyi++) yyps_dst->yyls[yyi] = yyps_src->yyls[yyi]; }
+  yyps_dst->yylsp = yyps_dst->yyls + (yyps_src->yylsp - yyps_src->yyls);
+]])[]b4_lac_if([[
+  yyps_dst->yyes_capacity = yyps_src->yyes_capacity;
+  if (yyps_src->yyes == yyps_src->yyesa)
+    yyps_dst->yyes = yyps_dst->yyesa;
+  else
+    {
+      yyps_dst->yyes = YY_CAST (yy_state_t *,
+                                YYMALLOC (YY_CAST (YYSIZE_T, yyps_src->yyes_capacity) * sizeof *yyps_dst->yyes));
+      if (!yyps_dst->yyes)
+        {
+          if (yyps_dst->yyss != yyps_dst->yyssa) YYSTACK_FREE (yyps_dst->yyss);
+          if (yyps_dst->yyvs != yyps_dst->yyvsa) YYSTACK_FREE (yyps_dst->yyvs);]b4_locations_if([[
+          if (yyps_dst->yyls != yyps_dst->yylsa) YYSTACK_FREE (yyps_dst->yyls);]])[
+          YYFREE (yyps_dst); return YY_NULLPTR;
+        }
+    }
+  { YYPTRDIFF_T yyi; for (yyi = 0; yyi < yyps_src->yyes_capacity; yyi++) yyps_dst->yyes[yyi] = yyps_src->yyes[yyi]; }
+]])[
+  return yyps_dst;
+}
+
 ]b4_parse_state_variable_macros([b4_pstate_macro_define])[
 
 /* Initialize the parser data structure.  */
@@ -1580,6 +1677,7 @@ yypstate_new (void)
   if (YYMAXDEPTH < yyes_capacity)
     yyes_capacity = YYMAXDEPTH;]])[
   yypstate_clear (yyps);
+  yyps->yyprefix_callback = YY_NULLPTR;
   return yyps;
 }
 
@@ -1599,6 +1697,33 @@ yypstate_delete (yypstate *yyps)
       YYFREE (yyps);]b4_pure_if([], [[
       yypstate_allocated = 0;]])[
     }
+}
+
+void
+]b4_prefix[pstate_set_prefix_callback (]b4_prefix[pstate *yyps, ]b4_prefix[prefix_callback yycb)
+{
+  if (yyps)
+    yyps->yyprefix_callback = yycb;
+}
+
+/* Check if current parser state represents a valid prefix.
+   Clones the state, pushes EOF, returns 1 if it accepts.  */
+static int
+yy_check_valid_prefix (yypstate *yyps_orig]b4_user_formals[)
+{
+  yypstate *yyps_clone;
+  int yyresult;
+  static YYSTYPE yylval_eof;  /* Static ensures zero-initialization.  */
+
+  yyps_clone = yypstate_clone (yyps_orig);
+  if (!yyps_clone)
+    return 0;  /* Clone failed, skip check.  */
+
+  /* Push EOF to clone.  Result: 0=accept, 1=reject, 2=memory error.  */
+  yyresult = yypush_parse (yyps_clone, 0, &yylval_eof]b4_locations_if([[, YY_NULLPTR]])b4_user_args[);
+
+  yypstate_delete (yyps_clone);
+  return yyresult == 0;  /* 0 means accepted.  */
 }
 ]])[
 
@@ -1898,7 +2023,14 @@ yyread_pushed_token:]])[
 
   /* Discard the shifted token.  */
   yychar = ]b4_symbol(empty, id)[;]b4_lac_if([[
-  YY_LAC_DISCARD ("shift");]])[
+  YY_LAC_DISCARD ("shift");]])[]b4_push_if([[
+
+  /* Check for valid prefix after shift.  */
+  if (yyps->yyprefix_callback && yy_check_valid_prefix (yyps]b4_user_args[))
+    {
+      if (yyps->yyprefix_callback (yyps, yytoken, yyvsp) != 0)
+        YYABORT;
+    }]])[
   goto yynewstate;
 
 

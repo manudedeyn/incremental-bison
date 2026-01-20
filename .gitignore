@@ -39,3 +39,13 @@
 /patches
 /releases
 /stamp-h*
+build/
+*.o
+*.lo
+*.la
+*.a
+*.so
+*.exe
+*.dll
+autom4te.cache/
+
