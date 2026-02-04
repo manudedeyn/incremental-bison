@@ -345,8 +345,13 @@ void ]b4_prefix[pstate_delete (]b4_prefix[pstate *ps);
 
 /* Valid prefix detection callback.
    Called when the input parsed so far could be a complete valid sentence.
-   Returns 0 to continue parsing, non-zero to abort (YYABORT).  */
-typedef int (*]b4_prefix[prefix_callback) (]b4_prefix[pstate *ps, int token, ]b4_api_PREFIX[STYPE const *value);
+   Parameters:
+     ps        - the original parser (unchanged, continues parsing)
+     completed - the clone that accepted EOF (contains computed attributes)
+     result    - pointer to top of clone's value stack (the final reduced value)
+   Returns 0 to continue parsing, non-zero to abort (YYABORT).
+   Note: The caller is responsible for deleting 'completed' after callback returns.  */
+typedef int (*]b4_prefix[prefix_callback) (]b4_prefix[pstate *ps, ]b4_prefix[pstate *completed, ]b4_api_PREFIX[STYPE const *result);
 void ]b4_prefix[pstate_set_prefix_callback (]b4_prefix[pstate *ps, ]b4_prefix[prefix_callback callback);
 ]])
 
@@ -1548,15 +1553,36 @@ yypull_parse (yypstate *yyps]b4_user_formals[)
   return yystatus;
 }]])[
 
-/* Deep-copy a parser state for valid prefix detection.
-   This function is placed before macro definitions to avoid conflicts
-   when accessing struct fields on both source and destination pointers.
-   Returns YY_NULLPTR on memory allocation failure.  */
+/*-----------------------------------------------------------------------.
+| yypstate_clone: Deep-copy a parser state for valid prefix detection.  |
+|                                                                        |
+| Creates an independent copy of the parser state that can be used to    |
+| test whether the current input is a valid prefix (by pushing EOF).     |
+|                                                                        |
+| Each stack has two storage modes: inline array (yyssa, yyvsa, etc.)    |
+| or heap-allocated (when stack grows beyond YYINITDEPTH).               |
+|                                                                        |
+| Returns YY_NULLPTR on allocation failure (uses goto for cleanup).      |
+`-----------------------------------------------------------------------*/
+
+/* Clone a stack: use inline array if source does, else heap-allocate.
+   Jumps to FAIL_LABEL on allocation failure. Uses YYCOPY for portability. */
+#define YYCLONE_STACK(STACK, STACKA, TYPE, NELEMS, FAIL_LABEL) \
+  if (yyps_src->STACK == yyps_src->STACKA) \
+    yyps_dst->STACK = yyps_dst->STACKA; \
+  else \
+    { \
+      yyps_dst->STACK = YY_CAST (TYPE *, \
+        YYMALLOC (YY_CAST (YYSIZE_T, NELEMS) * sizeof *yyps_dst->STACK)); \
+      if (!yyps_dst->STACK) \
+        goto FAIL_LABEL; \
+    } \
+  YYCOPY (yyps_dst->STACK, yyps_src->STACK, NELEMS)
+
 static yypstate *
 yypstate_clone (const yypstate *yyps_src)
 {
   yypstate *yyps_dst;
-  YYPTRDIFF_T yystack_depth;
 
   if (!yyps_src)
     return YY_NULLPTR;
@@ -1565,76 +1591,46 @@ yypstate_clone (const yypstate *yyps_src)
   if (!yyps_dst)
     return YY_NULLPTR;
 
-  yystack_depth = yyps_src->yyssp - yyps_src->yyss + 1;
-
-  yyps_dst->yynerrs = yyps_src->yynerrs;
-  yyps_dst->yystate = yyps_src->yystate;
-  yyps_dst->yyerrstatus = yyps_src->yyerrstatus;
-  yyps_dst->yystacksize = yyps_src->yystacksize;
-  yyps_dst->yynew = yyps_src->yynew;
+  /* Copy all scalar fields at once, then fix up pointers. */
+  *yyps_dst = *yyps_src;
   yyps_dst->yyprefix_callback = YY_NULLPTR;
 
-  if (yyps_src->yyss == yyps_src->yyssa)
-    yyps_dst->yyss = yyps_dst->yyssa;
-  else
-    {
-      yyps_dst->yyss = YY_CAST (yy_state_t *,
-                                YYMALLOC (YY_CAST (YYSIZE_T, yyps_src->yystacksize) * sizeof *yyps_dst->yyss));
-      if (!yyps_dst->yyss)
-        { YYFREE (yyps_dst); return YY_NULLPTR; }
-    }
-  { YYPTRDIFF_T yyi; for (yyi = 0; yyi < yystack_depth; yyi++) yyps_dst->yyss[yyi] = yyps_src->yyss[yyi]; }
+  /* Clone state stack. */
+  YYCLONE_STACK (yyss, yyssa, yy_state_t, yyps_src->yystacksize, fail_yyss);
   yyps_dst->yyssp = yyps_dst->yyss + (yyps_src->yyssp - yyps_src->yyss);
 
-  if (yyps_src->yyvs == yyps_src->yyvsa)
-    yyps_dst->yyvs = yyps_dst->yyvsa;
-  else
-    {
-      yyps_dst->yyvs = YY_CAST (YYSTYPE *,
-                                YYMALLOC (YY_CAST (YYSIZE_T, yyps_src->yystacksize) * sizeof *yyps_dst->yyvs));
-      if (!yyps_dst->yyvs)
-        {
-          if (yyps_dst->yyss != yyps_dst->yyssa) YYSTACK_FREE (yyps_dst->yyss);
-          YYFREE (yyps_dst); return YY_NULLPTR;
-        }
-    }
-  { YYPTRDIFF_T yyi; for (yyi = 0; yyi < yystack_depth; yyi++) yyps_dst->yyvs[yyi] = yyps_src->yyvs[yyi]; }
+  /* Clone value stack. */
+  YYCLONE_STACK (yyvs, yyvsa, YYSTYPE, yyps_src->yystacksize, fail_yyvs);
   yyps_dst->yyvsp = yyps_dst->yyvs + (yyps_src->yyvsp - yyps_src->yyvs);
 ]b4_locations_if([[
-  if (yyps_src->yyls == yyps_src->yylsa)
-    yyps_dst->yyls = yyps_dst->yylsa;
-  else
-    {
-      yyps_dst->yyls = YY_CAST (YYLTYPE *,
-                                YYMALLOC (YY_CAST (YYSIZE_T, yyps_src->yystacksize) * sizeof *yyps_dst->yyls));
-      if (!yyps_dst->yyls)
-        {
-          if (yyps_dst->yyss != yyps_dst->yyssa) YYSTACK_FREE (yyps_dst->yyss);
-          if (yyps_dst->yyvs != yyps_dst->yyvsa) YYSTACK_FREE (yyps_dst->yyvs);
-          YYFREE (yyps_dst); return YY_NULLPTR;
-        }
-    }
-  { YYPTRDIFF_T yyi; for (yyi = 0; yyi < yystack_depth; yyi++) yyps_dst->yyls[yyi] = yyps_src->yyls[yyi]; }
+  /* Clone location stack. */
+  YYCLONE_STACK (yyls, yylsa, YYLTYPE, yyps_src->yystacksize, fail_yyls);
   yyps_dst->yylsp = yyps_dst->yyls + (yyps_src->yylsp - yyps_src->yyls);
 ]])[]b4_lac_if([[
-  yyps_dst->yyes_capacity = yyps_src->yyes_capacity;
-  if (yyps_src->yyes == yyps_src->yyesa)
-    yyps_dst->yyes = yyps_dst->yyesa;
-  else
-    {
-      yyps_dst->yyes = YY_CAST (yy_state_t *,
-                                YYMALLOC (YY_CAST (YYSIZE_T, yyps_src->yyes_capacity) * sizeof *yyps_dst->yyes));
-      if (!yyps_dst->yyes)
-        {
-          if (yyps_dst->yyss != yyps_dst->yyssa) YYSTACK_FREE (yyps_dst->yyss);
-          if (yyps_dst->yyvs != yyps_dst->yyvsa) YYSTACK_FREE (yyps_dst->yyvs);]b4_locations_if([[
-          if (yyps_dst->yyls != yyps_dst->yylsa) YYSTACK_FREE (yyps_dst->yyls);]])[
-          YYFREE (yyps_dst); return YY_NULLPTR;
-        }
-    }
-  { YYPTRDIFF_T yyi; for (yyi = 0; yyi < yyps_src->yyes_capacity; yyi++) yyps_dst->yyes[yyi] = yyps_src->yyes[yyi]; }
+  /* Clone LAC stack. */
+  YYCLONE_STACK (yyes, yyesa, yy_state_t, yyps_src->yyes_capacity, fail_yyes);
 ]])[
+#undef YYCLONE_STACK
   return yyps_dst;
+
+  /* Cleanup on allocation failure (in reverse order of allocation). */
+]b4_lac_if([[fail_yyes:
+]b4_locations_if([[  if (yyps_dst->yyls != yyps_dst->yylsa) YYSTACK_FREE (yyps_dst->yyls);
+]])])[]b4_locations_if([[fail_yyls:
+  if (yyps_dst->yyvs != yyps_dst->yyvsa) YYSTACK_FREE (yyps_dst->yyvs);
+]])[fail_yyvs:
+  if (yyps_dst->yyss != yyps_dst->yyssa) YYSTACK_FREE (yyps_dst->yyss);
+fail_yyss:
+  YYFREE (yyps_dst);
+  return YY_NULLPTR;
+}
+
+/* Helper to get value stack top from a parser state.
+   Defined here (before yyps->member macros) to allow direct member access.  */
+static YYSTYPE *
+yy_pstate_value_stack_top (yypstate *yyps_arg)
+{
+  return yyps_arg->yyvsp;
 }
 
 ]b4_parse_state_variable_macros([b4_pstate_macro_define])[
@@ -1707,23 +1703,31 @@ void
 }
 
 /* Check if current parser state represents a valid prefix.
-   Clones the state, pushes EOF, returns 1 if it accepts.  */
-static int
+   Clones the state, pushes EOF, returns the clone if it accepts.
+   Returns YY_NULLPTR if not a valid prefix or clone failed.
+   Caller is responsible for deleting the returned clone.  */
+static yypstate *
 yy_check_valid_prefix (yypstate *yyps_orig]b4_user_formals[)
 {
   yypstate *yyps_clone;
   int yyresult;
-  static YYSTYPE yylval_eof;  /* Static ensures zero-initialization.  */
-
+]b4_pure_if([[  static YYSTYPE yylval_eof;  /* Static ensures zero-initialization.  */
+]])[
   yyps_clone = yypstate_clone (yyps_orig);
   if (!yyps_clone)
-    return 0;  /* Clone failed, skip check.  */
+    return YY_NULLPTR;  /* Clone failed, skip check.  */
 
-  /* Push EOF to clone.  Result: 0=accept, 1=reject, 2=memory error.  */
-  yyresult = yypush_parse (yyps_clone, 0, &yylval_eof]b4_locations_if([[, YY_NULLPTR]])b4_user_args[);
+  /* Push EOF (token 0) to clone.  Result: 0=accept, 1=reject, 2=memory error.  */
+]b4_pure_if([[  yyresult = yypush_parse (yyps_clone, 0, &yylval_eof]b4_locations_if([[, YY_NULLPTR]])b4_user_args[);]],
+[[  /* Impure mode: set globals and call without arguments.  */
+  yychar = 0;  /* EOF token.  */
+  yyresult = yypush_parse (yyps_clone);]])[
+
+  if (yyresult == 0)
+    return yyps_clone;  /* Valid prefix: return clone with computed attributes.  */
 
   yypstate_delete (yyps_clone);
-  return yyresult == 0;  /* 0 means accepted.  */
+  return YY_NULLPTR;  /* Not a valid prefix.  */
 }
 ]])[
 
@@ -2026,10 +2030,19 @@ yyread_pushed_token:]])[
   YY_LAC_DISCARD ("shift");]])[]b4_push_if([[
 
   /* Check for valid prefix after shift.  */
-  if (yyps->yyprefix_callback && yy_check_valid_prefix (yyps]b4_user_args[))
+  if (yyps->yyprefix_callback)
     {
-      if (yyps->yyprefix_callback (yyps, yytoken, yyvsp) != 0)
-        YYABORT;
+      yypstate *yyps_completed = yy_check_valid_prefix (yyps]b4_user_args[);
+      if (yyps_completed)
+        {
+          int yyprefix_result = yyps->yyprefix_callback (
+              yyps,                                    /* original parser */
+              yyps_completed,                          /* clone that accepted */
+              yy_pstate_value_stack_top (yyps_completed));  /* top of clone's value stack */
+          yypstate_delete (yyps_completed);
+          if (yyprefix_result != 0)
+            YYABORT;
+        }
     }]])[
   goto yynewstate;
 
